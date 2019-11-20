@@ -22,8 +22,8 @@ class colorlabel:
 
         if((self.hue_value>=0 and self.hue_value<=40) or (self.hue_value>=160 and self.hue_value<=179)):
             print("Red Brick Detected")
-            return 0   #0 for Red Brick
+            return 1   #1 for the Red Brick pile
 
         elif(self.hue_value >= 90 and self.hue_value<= 140):
             print("Blue Brick Detected")
-            return 1    #1 for Blue Brick
+            return 2   #2 for the Blue Brick pile

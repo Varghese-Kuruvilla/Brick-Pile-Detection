@@ -2,7 +2,6 @@ import sys
 sys.path.remove("/opt/ros/kinetic/lib/python2.7/dist-packages")
 from ctypes import *
 import math
-import random
 import os
 import cv2
 import numpy as np
@@ -20,21 +19,25 @@ from color_label import colorlabel
 #Global variables for debugging
 detected = 0
 not_detected = 0
+
 class read_inference:
     def __init__(self):
+        #Data members for reading the inference from darknet
         self.netMain = None
         self.metaMain = None
         self.altNames = None
         self.configPath = None
         self.weightPath = None
         self.metaPath = None
-        self.detections = None
-        self.frame_rgb = None
-        self.darknet_image = None 
-        self.cropped_image = None #Cropped image for finding Hue within the bounding box
-        self.brick_pile_color = " "
+        self.darknet_image = None
 
-    def initialize_network(self):  #Function to initialize network parameters 
+        self.detections = None #BB dimensions
+        self.frame_rgb = None  #RGB frame
+        self.cropped_image = None #Image cropped to BB dimensions
+        self.color_code = None 
+        self.brick_pile_color = {1:"Red",2:"Blue",3:"Green",4:"Orange"}
+
+    def initialize_network(self):  #Function to initialize darknet parameters 
         self.configPath = "/home/varghese/challenge_2/brick_train/brick_pile_train_v2/Weights/brick.cfg"
         self.weightPath = "/home/varghese/challenge_2/brick_train/brick_pile_train_v2/Weights/brick_4000.weights"
         self.metaPath = "/home/varghese/challenge_2/brick_train/brick_pile_train_v2/Weights/brick.data"
@@ -91,18 +94,16 @@ class read_inference:
         self.detections = darknet.detect_image(self.netMain, self.metaMain, self.darknet_image, thresh=0.25)
         print("self.detections:",self.detections) 
 
-        self.det_color()
+        self.select_roi()   #Function to crop the image to BB dimensions
 
         #Debug Block - For counting the number of detections
         #---------------------------------------------------------------------#
         if(len(self.detections) == 0):
             global not_detected
             not_detected = not_detected + 1
-            print("Not detected")
         else:
             global detected
             detected = detected + 1
-            print("Detected")
         
         image = self.cvDrawBoxes(self.frame_rgb)
         cv2.imshow('Demo', image)
@@ -111,7 +112,7 @@ class read_inference:
         #----------------------------------------------------------------------#
         
 
-    def det_color(self):
+    def select_roi(self):                #Function to crop the image to BB dimensions
         winName_crop = "Cropped Image"
         cv2.namedWindow(winName_crop,cv2.WINDOW_NORMAL)
         for detection in self.detections: 
@@ -132,7 +133,7 @@ class read_inference:
             
             hsv_image = cv2.cvtColor(self.cropped_image, cv2.COLOR_BGR2HSV)
 
-            self.brick_pile_color = color_obj.label(hsv_image)  #Brick_pile_color is a string that gives us the color of the brick
+            self.color_code = color_obj.label(hsv_image)  #Brick_pile_color is a string that gives us the color of the brick
 
 
     #Both of these are helper functions used for drawing boxes on the objects
@@ -160,11 +161,11 @@ class read_inference:
             #            " [" + str(round(detection[1] * 100, 2)) + "]",
             #            (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
             #            [0, 255, 0], 2)
-            print("self.brick_pile_color:",str(self.brick_pile_color))
+            print("self.brick_pile_color[color_code]:",self.brick_pile_color[self.color_code])
 
             cv2.putText(img,
-                        detection[0].decode() +
-                        str(self.brick_pile_color),
+                        #detection[0].decode() +
+                        self.brick_pile_color[self.color_code],
                         (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         [0, 255, 0], 2)
         return img
@@ -180,8 +181,9 @@ if __name__ == "__main__":
     while(cap.isOpened() and ret==True):
         ret, frame_read = cap.read()
         inf_obj.inference(frame_read)   #Read the inference
+
+        #For debug
         if(detected + not_detected == 40): 
             print("Number of frames detected:",detected)
             print("Number of frames missed:",not_detected)
 
-    #YOLO()
