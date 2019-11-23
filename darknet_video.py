@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import time
 import darknet
+import glob
 
 #ROS Dependencies
 import rospy
@@ -34,13 +35,14 @@ class read_inference:
         self.detections = None #BB dimensions
         self.frame_rgb = None  #RGB frame
         self.cropped_image = None #Image cropped to BB dimensions
+        self.crop_flag = None #Flag which indicates if xmin,ymin,xmax,ymax lies within the frame
         self.color_code = None 
         self.brick_pile_color = {1:"Red",2:"Blue",3:"Green",4:"Orange"}
 
     def initialize_network(self):  #Function to initialize darknet parameters 
         self.configPath = "/home/varghese/challenge_2/brick_train/brick_pile_train_v2/Weights/brick.cfg"
-        self.weightPath = "/home/varghese/challenge_2/brick_train/brick_pile_train_v2/Weights/brick_4000.weights"
-        self.metaPath = "/home/varghese/challenge_2/brick_train/brick_pile_train_v2/Weights/brick.data"
+        self.weightPath = "/home/varghese/challenge_2/brick_train/brick_stack_train_v1/Weights/brick_2000.weights"
+        self.metaPath = "/home/varghese/challenge_2/brick_train/brick_stack_train_v1/brick.data"
         if not os.path.exists(self.configPath):
             raise ValueError("Invalid config path `" +
                              os.path.abspath(self.configPath)+"`")
@@ -79,11 +81,13 @@ class read_inference:
 
         #self.darknet_image = darknet.make_image(darknet.network_width(self.netMain),
         #                                darknet.network_height(self.netMain),3)
-        self.darknet_image = darknet.make_image(1280,720,3) 
+        self.darknet_image = darknet.make_image(640,480,3) 
 
 
-    def inference(self,frame_rgb): #Function for inference i.e returning the bounding box 
-        self.frame_rgb = frame_rgb 
+    def inference(self,frame_rgb): #Function for inference i.e returning the bounding box
+        self.color_code = None
+        self.frame_rgb = frame_rgb
+        print("self.frame_rgb.shape:",self.frame_rgb.shape)
        # self.frame_resized = cv2.resize(frame_rgb,
        #                            (darknet.network_width(self.netMain),
        #                             darknet.network_height(self.netMain)),
@@ -121,19 +125,27 @@ class read_inference:
                 detection[2][2],\
                 detection[2][3]
             xmin, ymin, xmax, ymax = self.convertBack(float(x), float(y), float(w), float(h))
-
-            self.cropped_image = self.frame_rgb[ymin:ymax,xmin:xmax]
-            cv2.imshow(winName_crop,self.cropped_image)
-            key = cv2.waitKey(0)
-            if(key & 0xFF == ord('q')):
-                cv2.destroyAllWindows()
-                exit() 
-
-            #Converting self.cropped_image into HSV scale and extracting Hue channel alone
             
-            hsv_image = cv2.cvtColor(self.cropped_image, cv2.COLOR_BGR2HSV)
 
-            self.color_code = color_obj.label(hsv_image)  #Brick_pile_color is a string that gives us the color of the brick
+            print("xmin ymin xmax ymax:",xmin,ymin,xmax,ymax)
+            #Check if xmin,ymin,xmax,ymax lie within the frame
+            coordinate_ls = [xmin,ymin,xmax,ymax]
+            self.crop_flag = [(x>=0) for x in coordinate_ls] #self.crop_flag checks if xmin,ymin,xmax,ymax lies within the image boundaries 
+            self.crop_flag = all(self.crop_flag) and (xmin < self.frame_rgb.shape[1] or xmax < self.frame_rgb.shape[1]) and (ymin < self.frame_rgb.shape[0] or ymax < self.frame_rgb.shape[0])
+
+            if(self.crop_flag == True): 
+                self.cropped_image = self.frame_rgb[ymin:ymax,xmin:xmax]
+                cv2.imshow(winName_crop,self.cropped_image)
+                key = cv2.waitKey(1)
+                if(key & 0xFF == ord('q')):
+                    cv2.destroyAllWindows()
+                    exit() 
+
+                #Converting self.cropped_image into HSV scale and extracting Hue channel alone
+                
+                hsv_image = cv2.cvtColor(self.cropped_image, cv2.COLOR_BGR2HSV)
+
+                self.color_code = color_obj.label(hsv_image)  #Brick_pile_color is a string that gives us the color of the brick
 
 
     #Both of these are helper functions used for drawing boxes on the objects
@@ -161,29 +173,27 @@ class read_inference:
             #            " [" + str(round(detection[1] * 100, 2)) + "]",
             #            (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
             #            [0, 255, 0], 2)
-            print("self.brick_pile_color[color_code]:",self.brick_pile_color[self.color_code])
-
-            cv2.putText(img,
-                        #detection[0].decode() +
-                        self.brick_pile_color[self.color_code],
-                        (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        [0, 255, 0], 2)
+            if(self.color_code != None):
+                print("self.brick_pile_color[color_code]:",self.brick_pile_color[self.color_code])
+                cv2.putText(img,
+                            #detection[0].decode() +
+                            self.brick_pile_color[self.color_code],
+                            (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            [0, 255, 0], 2)
         return img
 
 
 if __name__ == "__main__":
 
-    cap = cv2.VideoCapture("/home/varghese/brick_data/data_5th_nov/capture_1.avi")
+    #cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
     color_obj = colorlabel()    #Object of the colorlabel class
     inf_obj = read_inference() #Create object inf_obj of class read_inference
     inf_obj.initialize_network()  #Initialize network
-    ret = True
-    while(cap.isOpened() and ret==True):
-        ret, frame_read = cap.read()
+    #ret = True
+    #while(cap.isOpened() and ret==True):
+    for img_path in glob.glob("/home/varghese/brick_data/data_nov21/cropped_videos/red_brick/*.jpg"):
+        #ret, frame_read = cap.read()
+        frame_read = cv2.imread(img_path)
         inf_obj.inference(frame_read)   #Read the inference
 
-        #For debug
-        if(detected + not_detected == 40): 
-            print("Number of frames detected:",detected)
-            print("Number of frames missed:",not_detected)
 
