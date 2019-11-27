@@ -42,6 +42,7 @@ class BrickZone(object):
         self.cropped_image = None #Image cropped to BB dimensions
         self.color_code = None 
         self.brick_pile_color = {1:"Red",2:"Blue",3:"Green",4:"Orange"}
+        self.dict_class_names = {b'Brick stack':0,b'Construction zone':1}
 
     def initialize_network(self, cfg_path, weights_path, meta_path):
 
@@ -93,7 +94,7 @@ class BrickZone(object):
                 pass
 
         #Initializing ros Node
-        rospy.init_node('listener', anonymous=True)
+        #rospy.init_node('listener', anonymous=True) #changed
 
 
     def select_roi(self):                #Function to crop the image to BB dimensions
@@ -128,9 +129,9 @@ class BrickZone(object):
         ymax = int(round(y + (h / 2)))
         return xmin, ymin, xmax, ymax
 
-    def cvDrawBoxes(self ,img):
+    def cvDrawBoxes(self ,img, detections,class_label):
         
-        for detection in self.detections:
+        for detection in detections:
             x, y, w, h = detection[2][0],\
                 detection[2][1],\
                 detection[2][2],\
@@ -140,19 +141,21 @@ class BrickZone(object):
             pt1 = (xmin, ymin)
             pt2 = (xmax, ymax)
             cv2.rectangle(img, pt1, pt2, (0, 255, 0), 1)
-            #cv2.putText(img,
-            #            detection[0].decode() +
-            #            " [" + str(round(detection[1] * 100, 2)) + "]",
-            #            (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-            #            [0, 255, 0], 2)
-            print("self.brick_pile_color[color_code]:",self.brick_pile_color[self.color_code])
-
             cv2.putText(img,
-                        #detection[0].decode() +
-                        self.brick_pile_color[self.color_code],
+                        detection[0].decode() +
+                        " [" + str(round(detection[1] * 100, 2)) + "]",
                         (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         [0, 255, 0], 2)
-        return img
+            
+            display(img,"Inference")
+            #print("self.brick_pile_color[color_code]:",self.brick_pile_color[self.color_code])
+
+            #cv2.putText(img,
+            #            #detection[0].decode() +
+            #            self.brick_pile_color[self.color_code],
+            #            (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+            #            [0, 255, 0], 2)
+        #return img
 
     def subscribe_position(self):
         drone_pos = rospy.wait_for_message('/dji_sdk/local_position',PointStamped)
@@ -175,7 +178,8 @@ class BrickZone(object):
                                         subscribing to one of the ROS topics
         '''
 
-        self.frame_rgb = cv2.cvtColor(in_image, cv2.COLOR_BGR2RGB)
+        #self.frame_rgb = cv2.cvtColor(in_image, cv2.COLOR_BGR2RGB)
+        self.frame_rgb = in_image
         frame_resized = self.frame_rgb
         #frame_resized = cv2.resize(self.frame_rgb, (self.net_width, self.net_height), interpolation=cv2.INTER_LINEAR) #changed
         # Copy image to darknet format 
@@ -183,24 +187,28 @@ class BrickZone(object):
         # Forward pass 
         detections = darknet.detect_image(self.netMain, self.metaMain, self.darknet_image, thresh)
         print("detections:",detections)
-
         if not detections:
             return []
         # Obtain the best detection from the list of detections 
         best_detection = detections[0]
-
         #### Check the class_ID of the detection and based on the ID return the local_position if 
         #### its a construction zone or do further processing if its a brick
 
-        if (best_detection[0] == 1):
+        class_code = self.dict_class_names[best_detection[0]] 
+
+        if (class_code == 1):
+            print("Inside construction zone")
+            self.cvDrawBoxes(frame_resized,[best_detection],'0') #0 for the construction zone
             return 0
             #local_position = self.subscribe_position() #changed
             #return (0, local_position) #changed
 
-        elif (best_detection[0] == 0):
-            self.detections = best_detection
+        elif (class_code == 0):
+            print("Inside Brick stack")
+            self.detections = [best_detection] 
             # crop the image and check the color of the image 
             self.select_roi()
+            self.cvDrawBoxes(frame_resized,self.detections,self.color_code)
             #local_position = self.subscribe_position() #changed
             #return (self.color_code, local_position) #changed
             return self.color_code
@@ -218,6 +226,7 @@ def display(img,txt):
 
 if __name__ == '__main__':
     brickzone_obj = BrickZone() #Object of class BrickZone
+    color_obj = colorlabel() #Object of the class colorlabel
     brickzone_obj.initialize_network("/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.cfg","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick_2000.weights","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.data") #Initializing network
 
     cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
