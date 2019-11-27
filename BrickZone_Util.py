@@ -42,7 +42,7 @@ class BrickZone(object):
         self.cropped_image = None #Image cropped to BB dimensions
         self.color_code = None 
         self.brick_pile_color = {1:"Red",2:"Blue",3:"Green",4:"Orange"}
-        self.dict_class_names = {b'Brick stack':0,b'Construction zone':1}
+        self.dict_class_names = {b'Brick stack':0,b'Construction zone':1}  #Dict for coding class names
 
     def initialize_network(self, cfg_path, weights_path, meta_path):
 
@@ -94,10 +94,12 @@ class BrickZone(object):
                 pass
 
         #Initializing ros Node
-        #rospy.init_node('listener', anonymous=True) #changed
+        rospy.init_node('listener', anonymous=True) 
 
 
-    def select_roi(self):                #Function to crop the image to BB dimensions
+    def select_roi(self):
+        '''Function to crop the image to the BB dimensions and find out colour of the brick stack within the ROI
+        Returns: None'''
         # winName_crop = "Cropped Image"
         # cv2.namedWindow(winName_crop,cv2.WINDOW_NORMAL)
         for detection in self.detections: 
@@ -106,6 +108,8 @@ class BrickZone(object):
                 detection[2][2],\
                 detection[2][3]
             xmin, ymin, xmax, ymax = self.convertBack(float(x), float(y), float(w), float(h))
+
+            xmin,ymin,xmax,ymax = self.check_crop_bound(xmin,ymin,xmax,ymax)  #Check if the image is cropped correctly
 
             self.cropped_image = self.frame_rgb[ymin:ymax,xmin:xmax]
             # cv2.imshow(winName_crop,self.cropped_image)
@@ -120,6 +124,25 @@ class BrickZone(object):
 
             self.color_code = color_obj.label(hsv_image)  #Brick_pile_color is a string that gives us the color of the brick
 
+
+    def check_crop_bound(self,xmin,ymin,xmax,ymax):
+        '''Function to check if coordinates for cropping are within image bounds
+        Returns: coordinates xmin,ymin,xmax,ymax after'''
+        coord_ls = [xmin,ymin,xmax,ymax]
+        for i in range(0,4):
+            if (coord_ls[i] <= 0):
+                coord_ls[i] = 0
+
+            if(i == 0 or i == 2):
+                if(coord_ls[i] >= self.frame_rgb.shape[1]):
+                    coord_ls[i] = self.frame_rgb.shape[1]
+
+            elif(i == 1 or i == 3):
+                if(coord_ls[i] >= self.frame_rgb.shape[0]):
+                    coord_ls[i] = self.frame_rgb.shape[0]
+
+        return coord_ls
+
     #Both of these are helper functions used for drawing boxes on the objects
     def convertBack(self, x, y, w, h):
         
@@ -130,7 +153,9 @@ class BrickZone(object):
         return xmin, ymin, xmax, ymax
 
     def cvDrawBoxes(self ,img, detections,class_label):
-        
+        '''Function to draw boxes around the ROI 
+        class_label indicates colour of the brick stack
+        or construction zone'''
         for detection in detections:
             x, y, w, h = detection[2][0],\
                 detection[2][1],\
@@ -143,7 +168,8 @@ class BrickZone(object):
             cv2.rectangle(img, pt1, pt2, (0, 255, 0), 1)
             cv2.putText(img,
                         detection[0].decode() +
-                        " [" + str(round(detection[1] * 100, 2)) + "]",
+                        " [" + str(round(detection[1] * 100, 2)) + "]" + 
+                        str(class_label),
                         (pt1[0], pt1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         [0, 255, 0], 2)
             
@@ -158,6 +184,7 @@ class BrickZone(object):
         #return img
 
     def subscribe_position(self):
+        '''Subscribes to the local_position topic'''
         drone_pos = rospy.wait_for_message('/dji_sdk/local_position',PointStamped)
         x_pos = float(drone_pos.point.x)
         y_pos = float(drone_pos.point.y)
@@ -196,44 +223,61 @@ class BrickZone(object):
 
         class_code = self.dict_class_names[best_detection[0]] 
 
-        if (class_code == 1):
-            print("Inside construction zone")
+        if (class_code == 1):  #Condition for construction zone detection
             self.cvDrawBoxes(frame_resized,[best_detection],'0') #0 for the construction zone
-            return 0
-            #local_position = self.subscribe_position() #changed
-            #return (0, local_position) #changed
+            #return 0
+            local_position = self.subscribe_position() #changed
+            return (0, local_position) #changed
 
-        elif (class_code == 0):
-            print("Inside Brick stack")
+        elif (class_code == 0): #Condition for brick stack detection
             self.detections = [best_detection] 
             # crop the image and check the color of the image 
             self.select_roi()
             self.cvDrawBoxes(frame_resized,self.detections,self.color_code)
-            #local_position = self.subscribe_position() #changed
-            #return (self.color_code, local_position) #changed
-            return self.color_code
+            local_position = self.subscribe_position() #changed
+            return (self.color_code, local_position) #changed
+            #return self.color_code
 
-#Functions for debug
+#Functions for debug and testing---------------------------------------------------------------
 def display(img,txt):
-    winName = txt
-    cv2.namedWindow(winName,cv2.WINDOW_NORMAL)
-    cv2.imshow(winName,img)
-    cv2.waitKey(1)
+    #winName = txt
+    #cv2.namedWindow(winName,cv2.WINDOW_NORMAL)
+    out.write(img)
+    #cv2.imshow(winName,img)
+    #cv2.waitKey(1)
     #key = cv2.waitKey(0)
     #if(key & 0xFF == ord('q')):
     #    cv2.destroyAllWindows()
     #    exit()
 
+def subscribe_image():
+    '''Function to subscribe to the raw image and convert it into an opencv image
+    Returns: Opencv image'''
+    image_msg = rospy.wait_for_message('/camera/color/image_raw',Image)
+    bridge = CvBridge()
+    cv_image = bridge.imgmsg_to_cv2(image_msg,"bgr8")
+    return cv_image
+
 if __name__ == '__main__':
+    #Initialize VideoWriter for testing 
+    out = cv2.VideoWriter(
+            "output.avi", cv2.VideoWriter_fourcc(*"MJPG"), 10.0,
+            (640, 480))
+
+    #File for writing local position output
+    f = open("test.txt","w")
+    
     brickzone_obj = BrickZone() #Object of class BrickZone
     color_obj = colorlabel() #Object of the class colorlabel
     brickzone_obj.initialize_network("/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.cfg","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick_2000.weights","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.data") #Initializing network
 
-    cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
-    ret = True
-    while(cap.isOpened() and ret == True):
-        ret, frame = cap.read()
-        print("frame.shape",frame.shape)
-        display(frame,"Live feed")
+    #cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
+    #ret = True
+    #while(cap.isOpened() and ret == True):
+    while(not(rospy.is_shutdown())):
+        frame = subscribe_image() #Subscribing to the RGB Image
+        #ret, frame = cap.read()
+        #display(frame,"Live feed")
         ret_val = brickzone_obj.infer(frame)
-        print("Ret val:",ret_val)
+        f.write(str(ret_val))
+        #print("Ret val:",ret_val)
