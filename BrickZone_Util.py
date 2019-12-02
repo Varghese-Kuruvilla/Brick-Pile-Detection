@@ -37,12 +37,17 @@ class BrickZone(object):
         self.net_channels = 3
 
         self.altNames = None
-        self.detections = None #BB dimensions
+        self.detections = None #Detections from darknet 
         self.frame_rgb = None  #RGB frame
         self.cropped_image = None #Image cropped to BB dimensions
-        self.color_code = None 
+        self.color_code = None
+        self.bb_confidence_ls = [] #List indicating if the centroid of the BB lies within/outside the centre of the image. 1-Centroid lies within 60% of the image centre. 0- Centroid lies outside 60% of the image centre
         self.brick_pile_color = {1:"Red",2:"Blue",3:"Green",4:"Orange"}
         self.dict_class_names = {b'Brick stack':0,b'Construction zone':1}  #Dict for coding class names
+        self.dict_lowconf_pos = {0:[] , 1:[], 2:[], 3:[], 4:[]} #Dict containing values as lists for averaging local positions obtained over 5 consecutive frames
+        self.dict_returned_pos = {0:0, 1:0, 2:0, 3:0, 4:0} #Dict indicating if local positions of the construction zone and brick stacks have been indentified
+
+        
 
     def initialize_network(self, cfg_path, weights_path, meta_path):
 
@@ -94,7 +99,7 @@ class BrickZone(object):
                 pass
 
         #Initializing ros Node
-        rospy.init_node('listener', anonymous=True) 
+        #rospy.init_node('listener', anonymous=True) 
 
 
     def select_roi(self):
@@ -102,6 +107,7 @@ class BrickZone(object):
         Returns: None'''
         # winName_crop = "Cropped Image"
         # cv2.namedWindow(winName_crop,cv2.WINDOW_NORMAL)
+        self.color_code = None
         for detection in self.detections: 
             x, y, w, h = detection[2][0],\
                 detection[2][1],\
@@ -194,6 +200,32 @@ class BrickZone(object):
 
         return position
 
+    def chk_bb_confidence(self):
+        '''Checks if the BBs in self.detections lies within 60% of the centre of the image
+        Populates list self.bb_confidence_ls with a value 1 if the BB lies within 60% of the image centre 
+        and a value 0 if it lies outside the 60% of the image centre'''
+
+        #Clear self.bb_confidence_ls
+        self.bb_confidence_ls.clear()
+
+        for detection in self.detections:
+            #Obtaining x,y,w,h values from self.detections and converting these values into xmin,ymin,xmax,ymax format
+            x, y, w, h = detection[2][0],\
+                detection[2][1],\
+                detection[2][2],\
+                detection[2][3]
+            xmin, ymin, xmax, ymax = self.convertBack(
+                float(x), float(y), float(w), float(h))
+
+            #Centroid of each BB 
+            #Format:[x_centroid,y_centroid]
+            bb_centroid = [int((xmin + xmax)/2),int((ymin+ymax)/2)]
+            
+            if(((bb_centroid[0] >= 0.20 * self.frame_rgb.shape[1]) and (bb_centroid[0] <= 0.80 * self.frame_rgb.shape[1])) and ((bb_centroid[1] >= 0.20 * self.frame_rgb.shape[0]) and (bb_centroid[1] <= 0.80 * self.frame_rgb.shape[0]))):
+                self.bb_confidence_ls.append(1) #Centroid of the BB lies in the centre of the image
+            else:
+                self.bb_confidence_ls.append(0) #Centroid of the BB lies outside image centre
+
 
     def infer(self, in_image, thresh = 0.5):
         ''' 
@@ -205,6 +237,8 @@ class BrickZone(object):
                                         subscribing to one of the ROS topics
         '''
 
+        #Initialize list to return a list of tuples of the form (color,local_position)
+        return_ls = []
         #self.frame_rgb = cv2.cvtColor(in_image, cv2.COLOR_BGR2RGB)
         self.frame_rgb = in_image
         frame_resized = self.frame_rgb
@@ -212,39 +246,68 @@ class BrickZone(object):
         # Copy image to darknet format 
         darknet.copy_image_from_bytes(self.darknet_image,frame_resized.tobytes())
         # Forward pass 
-        detections = darknet.detect_image(self.netMain, self.metaMain, self.darknet_image, thresh)
-        print("detections:",detections)
-        if not detections:
+        self.detections = darknet.detect_image(self.netMain, self.metaMain, self.darknet_image, thresh)
+        
+        #Function to check if the centroid of the BB is within 60% of the image centre or outside 60% of the image centre
+        self.chk_bb_confidence()
+
+        if not self.detections:
             return []
-        # Obtain the best detection from the list of detections 
-        best_detection = detections[0]
-        #### Check the class_ID of the detection and based on the ID return the local_position if 
-        #### its a construction zone or do further processing if its a brick
+        # Obtain the best detection from the list of detections
+        for (i,detection) in enumerate(self.detections):
+            #best_detection = self.detections[0]
+            #best_detection = detection[0]
+            best_detection = detection
+            #### Check the class_ID of the detection and based on the ID return the local_position if 
+            #### its a construction zone or do further processing if its a brick
 
-        class_code = self.dict_class_names[best_detection[0]] 
+            class_code = self.dict_class_names[best_detection[0]] 
 
-        if (class_code == 1):  #Condition for construction zone detection
-            self.cvDrawBoxes(frame_resized,[best_detection],'0') #0 for the construction zone
-            #return 0
-            local_position = self.subscribe_position() #changed
-            return (0, local_position) #changed
+            if(class_code == 1):  #Condition for construction zone detection
+                if(self.dict_returned_pos[0] == 1): #Local position has already been returned
+                    continue 
+                self.color_code = 0
+                self.cvDrawBoxes(frame_resized,[best_detection],'0') #0 for the construction zone
+                #local_position = self.subscribe_position()
+                #return (0,local_position)
+                
+                    
+            elif (class_code == 0): #Condition for brick stack detection
+                # crop the image and check the color of the image 
+                self.select_roi()
+                if(self.color_code!= None and self.dict_returned_pos[self.color_code] == 1): #Local position of the brick stack has been returned
+                    continue
 
-        elif (class_code == 0): #Condition for brick stack detection
-            self.detections = [best_detection] 
-            # crop the image and check the color of the image 
-            self.select_roi()
-            self.cvDrawBoxes(frame_resized,self.detections,self.color_code)
-            local_position = self.subscribe_position() #changed
-            return (self.color_code, local_position) #changed
-            #return self.color_code
+                self.cvDrawBoxes(frame_resized,[best_detection],self.color_code)
+                #local_position = self.subscribe_position() #changed
+                #return (self.color_code, local_position) #changed
+
+            if(self.bb_confidence_ls[i-1] == 1): #Centroid lies within 60% of the image centre
+                self.dict_returned_pos[self.color_code] = 1
+                #local_position = self.subscribe_position()
+                #return_ls.append((self.color_code, local_position)) #List containing tuples of (self.color_code,local positions) to be returned
+                return_ls.append(self.color_code)
+
+            elif(self.bb_confidence_ls[i-1] == 0): #Centroid lies outside 60% of the image centre
+                #local_position = self.subscribe_position()
+                #self.dict_lowconf_pos[self.color_code].append(local_position)
+                self.dict_lowconf_pos[self.color_code].append(self.color_code) #Append local_position to the corresponding list in the dictionary
+                print("self.dict_lowconf_pos",self.dict_lowconf_pos)
+
+                if(len(self.dict_lowconf_pos[self.color_code]) == 5): #After 5 detections we average the local positions and return them
+                    self.dict_returned_pos[self.color_code] = 1
+                    #return_ls.append(self.color_code, local_position)
+                    return_ls.append(self.color_code)
+            print("Self.dict_returned_pos:",self.dict_returned_pos)
+        return return_ls
 
 #Functions for debug and testing---------------------------------------------------------------
 def display(img,txt):
-    #winName = txt
-    #cv2.namedWindow(winName,cv2.WINDOW_NORMAL)
-    out.write(img)
-    #cv2.imshow(winName,img)
-    #cv2.waitKey(1)
+    winName = txt
+    cv2.namedWindow(winName,cv2.WINDOW_NORMAL)
+    #out.write(img)
+    cv2.imshow(winName,img)
+    cv2.waitKey(1)
     #key = cv2.waitKey(0)
     #if(key & 0xFF == ord('q')):
     #    cv2.destroyAllWindows()
@@ -271,13 +334,13 @@ if __name__ == '__main__':
     color_obj = colorlabel() #Object of the class colorlabel
     brickzone_obj.initialize_network("/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.cfg","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick_2000.weights","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.data") #Initializing network
 
-    #cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
-    #ret = True
-    #while(cap.isOpened() and ret == True):
-    while(not(rospy.is_shutdown())):
-        frame = subscribe_image() #Subscribing to the RGB Image
-        #ret, frame = cap.read()
-        #display(frame,"Live feed")
-        ret_val = brickzone_obj.infer(frame)
+    cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
+    ret = True
+    while(cap.isOpened() and ret == True):
+    #while(not(rospy.is_shutdown())):
+        #frame = subscribe_image() #Subscribing to the RGB Image
+        ret, frame = cap.read()
+        display(frame,"Live feed")
+        ret_val = brickzone_obj.infer(frame) #ret_val is a tuple (color_code,local_position)
         f.write(str(ret_val))
         #print("Ret val:",ret_val)
