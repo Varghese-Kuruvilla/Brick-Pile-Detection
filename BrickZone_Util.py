@@ -36,15 +36,18 @@ class BrickZone(object):
         self.net_height = None
         self.net_channels = 3
 
+
         self.altNames = None
         self.detections = None #Detections from darknet 
         self.frame_rgb = None  #RGB frame
         self.cropped_image = None #Image cropped to BB dimensions
         self.color_code = None
         self.bb_confidence_ls = [] #List indicating if the centroid of the BB lies within/outside the centre of the image. 1-Centroid lies within 60% of the image centre. 0- Centroid lies outside 60% of the image centre
+
+        self.avg = np.ndarray(shape=(3,1),dtype=float) #List containing the averaged local_position values
         self.brick_pile_color = {1:"Red",2:"Blue",3:"Green",4:"Orange"}
         self.dict_class_names = {b'Brick stack':0,b'Construction zone':1}  #Dict for coding class names
-        self.dict_lowconf_pos = {0:[] , 1:[], 2:[], 3:[], 4:[]} #Dict containing values as lists for averaging local positions obtained over 5 consecutive frames
+        self.dict_lowconf_pos = {0:[] , 1:[], 2:[], 3:[], 4:[]} #Dict containing values as lists for averaging local positions obtained over 5 consecutive frames if brick stack is detected outside 60% of the image centre
         self.dict_returned_pos = {0:0, 1:0, 2:0, 3:0, 4:0} #Dict indicating if local positions of the construction zone and brick stacks have been indentified
 
         
@@ -99,7 +102,7 @@ class BrickZone(object):
                 pass
 
         #Initializing ros Node
-        #rospy.init_node('listener', anonymous=True) 
+        rospy.init_node('listener', anonymous=True) 
 
 
     def select_roi(self):
@@ -227,6 +230,24 @@ class BrickZone(object):
                 self.bb_confidence_ls.append(0) #Centroid of the BB lies outside image centre
 
 
+    def average_local_position(self):
+        '''
+        Function to average the 5 local positions in self.dict_lowconf_pos[self.color_code]
+        Populates the np array self.avg
+        '''
+        self.avg = np.empty([3,1], dtype = float) 
+        print(self.dict_lowconf_pos[self.color_code])
+        for local_position in (self.dict_lowconf_pos[self.color_code]):
+            for i in range(0,3):
+                self.avg[i][0] = self.avg[i][0] + local_position[i]
+
+        print("self.avg:",self.avg)
+        self.avg = self.avg / 2 
+        print("self.avg:",self.avg)
+        self.avg = self.avg[:,0].tolist()
+        print("conversion to list")
+        print("self.avg:",self.avg)
+
     def infer(self, in_image, thresh = 0.5):
         ''' 
             Forward pass of the model for the given RGB input image. 
@@ -263,6 +284,7 @@ class BrickZone(object):
 
             class_code = self.dict_class_names[best_detection[0]] 
 
+            ####Following block of code(line 267-272) determines the self.color_code value for each detection 
             if(class_code == 1):  #Condition for construction zone detection
                 if(self.dict_returned_pos[0] == 1): #Local position has already been returned
                     continue 
@@ -283,23 +305,29 @@ class BrickZone(object):
                 #return (self.color_code, local_position) #changed
 
             if(self.bb_confidence_ls[i-1] == 1): #Centroid lies within 60% of the image centre
+                print("Inside confidence = 1")
                 self.dict_returned_pos[self.color_code] = 1
-                #local_position = self.subscribe_position()
-                #return_ls.append((self.color_code, local_position)) #List containing tuples of (self.color_code,local positions) to be returned
-                return_ls.append(self.color_code)
+                local_position = self.subscribe_position()
+                return_ls.append((1,self.color_code, local_position)) #List to be returned ,contains tuples of (self.color_code,local positions)
+                #return_ls.append(self.color_code)
 
             elif(self.bb_confidence_ls[i-1] == 0): #Centroid lies outside 60% of the image centre
-                #local_position = self.subscribe_position()
-                #self.dict_lowconf_pos[self.color_code].append(local_position)
-                self.dict_lowconf_pos[self.color_code].append(self.color_code) #Append local_position to the corresponding list in the dictionary
+                print("Inside confidence = 0")
+                local_position = self.subscribe_position()
+                self.dict_lowconf_pos[self.color_code].append(local_position)
+                #self.dict_lowconf_pos[self.color_code].append(self.color_code) #Append local_position to the corresponding list in the dictionary
                 print("self.dict_lowconf_pos",self.dict_lowconf_pos)
 
-                if(len(self.dict_lowconf_pos[self.color_code]) == 5): #After 5 detections we average the local positions and return them
+                if(len(self.dict_lowconf_pos[self.color_code]) == 2): #After 5 detections we average the local positions and return them
+                    print("Inside length = 2")
+                    self.average_local_position()  #Function to average the local positions 
                     self.dict_returned_pos[self.color_code] = 1
-                    #return_ls.append(self.color_code, local_position)
-                    return_ls.append(self.color_code)
+                    return_ls.append((0,self.color_code, self.avg))
+                    #return_ls.append(self.color_code)
             print("Self.dict_returned_pos:",self.dict_returned_pos)
         return return_ls
+
+
 
 #Functions for debug and testing---------------------------------------------------------------
 def display(img,txt):
@@ -334,12 +362,12 @@ if __name__ == '__main__':
     color_obj = colorlabel() #Object of the class colorlabel
     brickzone_obj.initialize_network("/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.cfg","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick_2000.weights","/home/varghese/challenge_2/brick_train/brick_stack_construction_zone_v1/Weights/brick.data") #Initializing network
 
-    cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
-    ret = True
-    while(cap.isOpened() and ret == True):
-    #while(not(rospy.is_shutdown())):
-        #frame = subscribe_image() #Subscribing to the RGB Image
-        ret, frame = cap.read()
+    #cap = cv2.VideoCapture("/home/varghese/brick_data/data_nov21/cropped_videos/rosbag_3_cropped.m4v")
+    #ret = True
+    #while(cap.isOpened() and ret == True):
+    while(not(rospy.is_shutdown())):
+        frame = subscribe_image() #Subscribing to the RGB Image
+        #ret, frame = cap.read()
         display(frame,"Live feed")
         ret_val = brickzone_obj.infer(frame) #ret_val is a tuple (color_code,local_position)
         f.write(str(ret_val))
